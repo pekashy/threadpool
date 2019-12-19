@@ -18,7 +18,7 @@ typedef void (*function_pointer)(void *);
 class ThreadPool {
 public:
     ThreadPool() : done(false), soft_finish(false), joiner(threads) {
-        unsigned const thread_count = std::thread::hardware_concurrency();
+        unsigned const thread_count = 64;
         num_undone = thread_count;
         try {
             for (unsigned i = 0; i < thread_count; ++i) {
@@ -44,14 +44,14 @@ public:
     void finish_work() { // exit as all work finishes
         soft_finish = true;
         std::unique_lock<std::mutex> lck(mut);
-        finished.wait(lck);
+        finished.wait(lck, [this]() { return this->ready; });
     }
 
 private:
     std::atomic_bool done; // flag not to wait or take any more tasks
     std::atomic_bool soft_finish; // flag that there will be no more new threads
     std::atomic_int num_undone; // keeping track of threads still in work
-
+    bool ready = false;
 
     ThreadSafeQueue<std::pair<function_pointer, void *>> work_queue;
     std::vector<std::thread> threads;
@@ -74,6 +74,8 @@ private:
         }
         num_undone--;
         if (done && !num_undone) {
+            std::unique_lock<std::mutex> lck(mut);
+            ready = true;
             finished.notify_all();
         }
     }

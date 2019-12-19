@@ -8,6 +8,9 @@
 using std::cin;
 using std::cout;
 
+ThreadPool tp;
+
+
 template<typename T>
 struct arg {
     arg() = default;
@@ -22,7 +25,12 @@ struct arg {
         array = vals;
     }
 
-    arg(T *arr, T *buff, int l, int m, int r) : array(arr), buffer(buff), left(l), middle(m), right(r) {}
+    arg(T *arr, int l, int c, int d, std::mutex *_m, std::condition_variable *_cond, bool role, bool *_cond_ready)
+            : array(arr), low(l),
+              cnt(c), dir(d), m(_m),
+              cond(_cond),
+              blocking(role),
+              cond_ready(_cond_ready) {}
 
     T operator()(T val) {
         *array = val;
@@ -30,96 +38,124 @@ struct arg {
     }
 
     T *array;
-    T *buffer;
-    int left;
-    int middle;
-    int right;
+    int low;
+    int cnt;
+    int dir;
+    std::mutex *m;
+    std::condition_variable *cond;
+    bool *cond_ready; // not to miss the notify
+    bool blocking;
     size_t len;
 };
 
 int n;
 
 
-template<typename T>
-void merge(void *args) {
+void compAndSwap(int a[], int i, int j, int dir) {
+    if (dir == (a[i] > a[j]))
+        std::swap(a[i], a[j]);
+}
 
-    T *array = ((arg<T> *) args)->array;
-    T *buffer = ((arg<T> *) args)->buffer;
-    int left = ((arg<T> *) args)->left;
-    int middle = ((arg<T> *) args)->middle;
-    int right = ((arg<T> *) args)->right;
+void bitonicMerge(int a[], int low, int cnt, int dir) {
+    if (cnt > 1) {
+        int k = cnt / 2;
+        for (int i = low; i < low + k; i++)
+            compAndSwap(a, i, i + k, dir);
+        bitonicMerge(a, low, k, dir);
+        bitonicMerge(a, low + k, k, dir);
+    }
+}
 
-    int pos_left = 0;
-    int pos_right = 0;
+void bitonicSort(void *args) {
+    std::stringstream ss;
+    ss << std::this_thread::get_id();
+    uint64_t id = std::stoull(ss.str());
 
-    while (left + pos_left < middle && middle + pos_right < right) {
-        if (array[left + pos_left] < array[middle + pos_right]) {
-            buffer[pos_left + pos_right] = std::move(array[left + pos_left]);
-            pos_left++;
-        } else {
-            buffer[pos_left + pos_right] = std::move(array[middle + pos_right]);
-            pos_right++;
+    int cnt = ((arg<int> *) args)->cnt;
+    int *a = ((arg<int> *) args)->array;
+    int low = ((arg<int> *) args)->low;
+    int dir = ((arg<int> *) args)->dir;
+    bool blocking = (((arg<int> *) args))->blocking;
+    bool *cond_ready = (((arg<int> *) args))->cond_ready;
+    std::mutex *m = ((arg<int> *) args)->m;
+    std::condition_variable *cnd = ((arg<int> *) args)->cond;
+    //printf("%d Entered %lu %d\n", blocking, id, cnt);
+
+    std::mutex *m1_new = new std::mutex;
+    std::condition_variable *c1 = new std::condition_variable;
+    int k = cnt / 2;
+    // sort in ascending order since dir here is 1
+    bool c_ready = false;
+    auto args1 = new arg<int>(a, low, k, 1, m1_new, c1, false, &c_ready);
+    auto args2 = new arg<int>(a, low + k, k, 0, m1_new, c1, true, &c_ready);
+
+    if (cnt > 1) {
+        tp.submit(&bitonicSort, args1);
+        bitonicSort(args2);
+        bitonicMerge(a, low, cnt, dir);
+
+        if (blocking) {
+            std::unique_lock<std::mutex> lck(*m);
+            //printf("%d Waiting %lu %d\n", blocking, id, cnt);
+            cnd->wait(lck, [cond_ready]() { return *cond_ready; });
+            fflush(stdout);
+            //printf("%d Passed %lu %d\n", blocking, id, cnt);
+            fflush(stdout);
         }
     }
-
-    while (left + pos_left < middle) {
-        buffer[pos_left + pos_right] = std::move(array[left + pos_left]);
-        pos_left++;
+    if (!blocking) {
+        std::unique_lock<std::mutex> lck(*m);
+        *cond_ready = true;
+        cnd->notify_one();
+        fflush(stdout);
+        //printf("%d Notified %lu %d\n", blocking, id, cnt);
+        fflush(stdout);
     }
-
-    while (middle + pos_right < right) {
-        buffer[pos_left + pos_right] = std::move(array[middle + pos_right]);
-        pos_right++;
+    else {
+        /*free(args1);
+        free(args2);
+        free(m1_new);
+        free(c1);*/
     }
+    //printf("%d Finished %lu %d\n", blocking, id, cnt);
+    /*free(args1);
+    free(args2);
+    free(m1_new);
+    free(c1);*/
 
-    for (int i = 0; i < pos_left + pos_right; i++)
-        array[left + i] = std::move(buffer[i]);
+    //cnd->notify_one();
+    //sleep(1);
 }
-
-template<typename T>
-void merge_sort(ThreadPool &tp, std::vector<arg<T> *> &vec_pointer, T *array, T *buffer, int left, int right) {
-    if (right - left <= 1) {
-        return;
-    }
-
-    int middle = left + (right - left) / 2;
-
-    merge_sort(tp, vec_pointer, array, buffer, left, middle);
-    merge_sort(tp, vec_pointer, array, buffer, middle, right);
-    auto *args = new arg<T>(array, buffer, left, middle, right);
-    tp.submit(merge<T>, args);
-    vec_pointer.push_back(args);
-}
-
 
 int main() {
     int n;
-    std::cin >> n;
-
-    int *arr = new int[n];
-    int *buff = new int[n];
 
     std::ifstream ifile("input");
     ifile >> n;
-
+    int *arr = new int[n];
     for (int i = 0; i < n; i++) {
         ifile >> arr[i];
     }
-
     ifile.close();
 
-
-    ThreadPool tp;
-    std::vector<arg<int> *> vec_pointer; // keeping track of memory we allocated
-    merge_sort(tp, vec_pointer, arr, buff, 0, n);
+    //std::vector<a::argint> *> vec_pointer; // keeping track of memory we allocated
+    std::mutex m;
+    std::condition_variable cnd;
+    bool cond_ready = false;
+    auto args = new arg<int>(arr, 0, n, 1, &m, &cnd, false, &cond_ready);
+    bitonicSort(args);
+    //merge_sort(tp, vec_pointer, arr, buff, 0, n);
+    //printf("waiting for pool\n");
     tp.finish_work(); // signaling pool, there will be no more tasks, waiting for current tasks to finish
-    vec_pointer.clear(); // cleaning argument memory
+    //vec_pointer.clear(); // cleaning argument memory
 
 
     std::ofstream ofile("output");
     for (int i = 0; i < n; i++) {
         ofile << arr[i] << " ";
+        cout << arr[i] << " ";
     }
+
     ofile.close();
 
     std::cout << std::endl;
