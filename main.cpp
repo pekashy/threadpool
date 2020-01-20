@@ -3,6 +3,7 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <chrono>  // for high_resolution_clock
 
 using std::cin;
 using std::cout;
@@ -84,11 +85,11 @@ void bitonicSort(void *args) {
         std::unique_lock<std::mutex> lck(*m);
         *cond_ready = true;  // in case part 2 not got to wait block yet
         cnd->notify_one();  // allow part 2 to pass
-    } else {
-        free(args1);
-        free(args2);
-        free(m1_new);
-        free(c1);
+    } else { // have some sigsegv issues here
+        //free(args1);
+        //free(args2);
+        //free(m1_new);
+        //free(c1);
     }
 
 }
@@ -111,16 +112,19 @@ int main(int argc, char** argv) {
     std::condition_variable cnd;
     bool cond_ready = false;
     auto args = new arg<int>(arr, 0, n, 1, &m, &cnd, false, &cond_ready, tp);
+    auto start = std::chrono::high_resolution_clock::now();
     bitonicSort(args);
     tp.finishWork(); // signaling pool, there will be no more tasks, waiting for current tasks to finish
-
-
+    auto finish = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = finish - start;
+    cout << elapsed.count() << std::endl;
+    /*
     std::ofstream ofile("output");
     for (int i = 0; i < n; i++) {
         ofile << arr[i] << " ";
         cout << arr[i] << " ";
-    }
-    ofile.close();
-    std::cout << std::endl;
+    }*/
+    //ofile.close();
+    //std::cout << std::endl;
     return 0;
 }
