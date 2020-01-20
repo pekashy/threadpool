@@ -1,40 +1,26 @@
 #include "threadpool.hpp"
 
 #include <iostream>
-#include <unistd.h>
 #include <fstream>
 #include <algorithm>
 
 using std::cin;
 using std::cout;
 
-ThreadPool tp;
-
-
 template<typename T>
 struct arg {
     arg() = default;
 
-    arg(T val) {
-        *array = val;
-        len = 1;
-    }
-
-    arg(T *vals) {
-        len = sizeof(vals);
-        array = vals;
-    }
-
-    arg(T *arr, int l, int c, int d, std::mutex *_m, std::condition_variable *_cond, bool role, bool *_cond_ready)
+    arg(T *arr, int l, int c, int d, std::mutex *_m, std::condition_variable *_cond, bool role, bool *_cond_ready, ThreadPool& _tp)
             : array(arr), low(l),
               cnt(c), dir(d), m(_m),
               cond(_cond),
               blocking(role),
-              cond_ready(_cond_ready) {}
+              cond_ready(_cond_ready),
+              tp(_tp) {}
 
     T operator()(T val) {
         *array = val;
-        len = 1;
     }
 
     T *array;
@@ -45,11 +31,8 @@ struct arg {
     std::condition_variable *cond;  // to sync before merge
     bool *cond_ready;  // not to miss the notify
     bool blocking;  // on each stage of we run one part in current part and one in queue
-    size_t len;
+    ThreadPool &tp;
 };
-
-int n;
-
 
 void compAndSwap(int a[], int i, int j, int dir) {
     if (dir == (a[i] > a[j]))
@@ -67,10 +50,6 @@ void bitonicMerge(int a[], int low, int cnt, int dir) {
 }
 
 void bitonicSort(void *args) {
-    /*std::stringstream ss;
-    ss << std::this_thread::get_id();
-    uint64_t id = std::stoull(ss.str());*/
-
     int cnt = ((arg<int> *) args)->cnt;
     int *a = ((arg<int> *) args)->array;
     int low = ((arg<int> *) args)->low;
@@ -79,43 +58,32 @@ void bitonicSort(void *args) {
     bool *cond_ready = (((arg<int> *) args))->cond_ready;
     std::mutex *m = ((arg<int> *) args)->m;
     std::condition_variable *cnd = ((arg<int> *) args)->cond;
-    //printf("%d Entered %lu %d\n", blocking, id, cnt);
+    ThreadPool& tp = ((arg<int> *) args)->tp;
 
-    std::mutex *m1_new = new std::mutex;
-    std::condition_variable *c1 = new std::condition_variable;
+    auto *m1_new = new std::mutex;
+    auto *c1 = new std::condition_variable;
     int k = cnt / 2;
     // sort in ascending order since dir here is 1
     bool c_ready = false;
-    auto args1 = new arg<int>(a, low, k, 1, m1_new, c1, false, &c_ready);
-    auto args2 = new arg<int>(a, low + k, k, 0, m1_new, c1, true, &c_ready);
+    auto args1 = new arg<int>(a, low, k, 1, m1_new, c1, false, &c_ready, tp);
+    auto args2 = new arg<int>(a, low + k, k, 0, m1_new, c1, true, &c_ready, tp);
 
     if (cnt > 1) {
         if (tp.submit(&bitonicSort, args1)) { // part 1
-            // printf("%d Sorted %lu %d  %d %d\n", blocking, id, cnt, *cond_ready, tp.getNumBusy());
-            std::sort(a + low, a + low + cnt); // sort to the end in case we out of threads
+            std::sort(a + low, a + low + cnt); // sort to the end in case we are out of threads
         } else {
-            // printf("%d Not Sorted %lu %d  %d\n", blocking, id, cnt, *cond_ready);
             bitonicSort(args2);  // part 2
         }
         bitonicMerge(a, low, cnt, dir);
         if (blocking) {  // this part called for part 2
             std::unique_lock<std::mutex> lck(*m); // locks mutex
-            // printf("%d Waiting 2 %lu %d  %d %d\n", blocking, id, cnt, *cond_ready, tp.getNumBusy());
-            // fflush(stdout);
-            // wait unlocks lock and waits for separate thread to notify variable
             cnd->wait(lck, [cond_ready]() { return *cond_ready; });  // cond_ready helps not to miss the notification
-            // printf("%d Passed %lu %d\n", blocking, id, cnt);
-            // fflush(stdout);
         }
     }
     if (!blocking) {  // this - is for part 1
-        // printf("%d Waiting 1 %lu %d\n", blocking, id, cnt);
-        //fflush(stdout);
         std::unique_lock<std::mutex> lck(*m);
         *cond_ready = true;  // in case part 2 not got to wait block yet
         cnd->notify_one();  // allow part 2 to pass
-        // printf("%d Notified %lu %d\n", blocking, id, cnt);
-        //fflush(stdout);
     } else {
         free(args1);
         free(args2);
@@ -125,9 +93,9 @@ void bitonicSort(void *args) {
 
 }
 
-int main() {
+int main(int argc, char** argv) {
     int n;
-
+    int nthreads = 8;
     std::ifstream ifile("input");
     ifile >> n;
     int *arr = new int[n];
@@ -135,11 +103,14 @@ int main() {
         ifile >> arr[i];
     }
     ifile.close();
-
+    if(argc > 1) {
+        std::istringstream(argv[1]) >> nthreads;
+    }
+    ThreadPool tp(nthreads);
     std::mutex m;
     std::condition_variable cnd;
     bool cond_ready = false;
-    auto args = new arg<int>(arr, 0, n, 1, &m, &cnd, false, &cond_ready);
+    auto args = new arg<int>(arr, 0, n, 1, &m, &cnd, false, &cond_ready, tp);
     bitonicSort(args);
     tp.finishWork(); // signaling pool, there will be no more tasks, waiting for current tasks to finish
 

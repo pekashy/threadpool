@@ -17,8 +17,8 @@ typedef void (*function_pointer)(void *);
 
 class ThreadPool {
 public:
-    ThreadPool() : done(false), soft_finish(false), joiner(threads) {
-        thread_count = std::thread::hardware_concurrency();
+    ThreadPool(int tc = (int) std::thread::hardware_concurrency()) : done(false), soft_finish(false), joiner(threads) {
+        thread_count = tc;
         num_busy = 0;
 
         try {
@@ -58,6 +58,9 @@ public:
         std::unique_lock<std::mutex> lck(mut);
         finished.wait(lck, [this]() { return this->ready; });
     }
+
+    ~ThreadPool() = default;
+
 
 private:
     std::atomic_bool done; // flag not to wait or take any more tasks
